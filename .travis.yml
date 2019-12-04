@@ -1,4 +1,6 @@
-language: generic
+language: shell
+os: linux
+if: tag IS present
 
 before_install:
   - mkdir -p ${STACK_BIN}
@@ -6,6 +8,7 @@ before_install:
   - travis_retry curl -sSL https://get.haskellstack.org/ | sh
 
 script:
+  - stack test
   - stack install
 
 jobs:
@@ -18,12 +21,11 @@ jobs:
         directories:
           - ${STACK_HOME}
       before_deploy:
-        - cp ${STACK_BIN}/unfog ${STACK_BIN}/unfog-${TRAVIS_OS_NAME}
+        - tar czf "${STACK_BIN}/unfog-${TRAVIS_OS_NAME}.tar.gz" -C "${STACK_BIN}" unfog
       deploy: &deploy_base
         provider: releases
-        api_key: ${GITHUB_TOKEN}
-        file: ${STACK_BIN}/unfog-${TRAVIS_OS_NAME}
-        skip_cleanup: true
+        token: ${GITHUB_TOKEN}
+        file: ${STACK_BIN}/unfog-${TRAVIS_OS_NAME}.tar.gz
         draft: false
         name: ${TRAVIS_TAG}
         on:
@@ -37,7 +39,7 @@ jobs:
         directories:
           - ${STACK_HOME}
       before_deploy:
-        - cp ${STACK_BIN}/unfog ${STACK_BIN}/unfog-${TRAVIS_OS_NAME}
+        - tar czf "${STACK_BIN}/unfog-${TRAVIS_OS_NAME}.tar.gz" -C "${STACK_BIN}" unfog
       deploy:
         <<: *deploy_base
 
@@ -50,7 +52,7 @@ jobs:
           - ${STACK_HOME}
           - ${HOME}/AppData/Local/Programs/stack
       before_deploy:
-        - cp ${STACK_BIN}/unfog.exe ${STACK_BIN}/unfog-${TRAVIS_OS_NAME}.exe
+        - mv "${STACK_BIN}/unfog" "${STACK_BIN}/unfog.exe"
+        - tar czf "${STACK_BIN}/unfog-${TRAVIS_OS_NAME}.tar.gz" -C "${STACK_BIN}" unfog.exe
       deploy:
         <<: *deploy_base
-        file: ${STACK_BIN}/unfog-${TRAVIS_OS_NAME}.exe

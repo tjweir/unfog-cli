@@ -17,19 +17,25 @@ A simple task and time manager, written in [Haskell](https://www.haskell.org).
     * [Toggle](#toggle)
     * [Done](#done)
     * [Delete](#delete)
+    * [Remove](#remove)
     * [Context](#context)
     * [Worktime](#worktime)
   * [Options](#options)
     * [JSON](#json)
   * [Contributing](#contributing)
-  * [Changelog](#changelog)
+  * [Changelog](https://github.com/unfog-io/unfog-cli/blob/master/CHANGELOG.md#changelog)
   * [Credits](#credits)
 
 ## Installation
 ### From binaries
 
-Linux, OSX and Windows are supported. See the latest release [on
-GitHub](https://github.com/unfog-io/unfog-cli/releases/latest).
+```bash
+curl -sSL https://raw.githubusercontent.com/unfog-io/unfog-cli/master/install.sh | sh
+```
+
+*Note: Linux, OSX and Windows are supported. See the [releases
+section](https://github.com/unfog-io/unfog-cli/releases).*
+
 
 ### From sources
 
@@ -110,6 +116,11 @@ unfog done <id>
 unfog delete <id>
 ```
 
+### Remove
+
+The remove command acts like a toggle. If the task is already done, then it
+[deletes it](#delete), otherwise it [marks it as done](#done).
+
 ### Context
 
 Filters tasks by the given tags. Once set up:
@@ -122,15 +133,14 @@ Filters tasks by the given tags. Once set up:
 unfog context <+tag1> <+tag2> ...
 ```
 
-The special context `done` allows you to see done tasks:
+The special context `+done` allows you to see done tasks:
 
 ```bash
-unfog context done
+unfog context +done
 ```
 
 ![image](https://user-images.githubusercontent.com/10437171/69493746-c88ef100-0eb2-11ea-9dc2-c17dc7b4b8e4.png)
 
-*Note: normal contexts (+tags) and special contexts can be used together.*
 *Note: giving an empty (or invalid) context will clear it.*
 
 ### Worktime
@@ -204,11 +214,6 @@ convention. A line should never contain more than `80` characters.
 
 Tests should be added for each new functionality. Be sure to run tests before
 proposing a pull request.
-
-## Changelog
-
-- **Nov. 26, 2019** - Make CLI cross-compatible Linux, OSX and Windows
-- **Nov. 23, 2019** - First release
 
 ## Credits
 

@@ -8,12 +8,13 @@ import           Data.Aeson              hiding ( Error )
 import qualified Data.ByteString.Lazy.Char8    as BL
 import           Text.PrettyPrint.Boxes
 
-import qualified Store
+import           Store
 import           State
 import           Task
 import           Event
 import           Utils
 import           Response
+import qualified Parsec
 
 data Command
   = CreateTask UTCTime Ref Id Pos Desc [Tag] Due
@@ -22,20 +23,22 @@ data Command
   | StopTask UTCTime Ref Id
   | MarkAsDoneTask UTCTime Ref Id Id
   | DeleteTask UTCTime Ref Id
-  | SetContext UTCTime Bool [String]
+  | SetContext UTCTime [Tag]
   | Error String String
   | NoOp
   deriving (Show, Read)
 
-handle :: ResponseType -> [String] -> IO ()
-handle rtype args = do
+subscribers :: [Subscriber]
+subscribers = [logger]
+
+handle :: Parsec.ArgTree -> IO ()
+handle args = do
   now   <- getCurrentTime
-  state <- State.applyAll <$> Store.readAll
-  let command     = parseArgs now state args
-  let events      = execute state command
-  let subscribers = [logger]
-  Store.writeAll events
-  notify rtype command subscribers
+  state <- applyEvents <$> readEvents
+  let cmd  = getCmd now args state
+  let evts = execute state cmd
+  writeEvents evts
+  notify args cmd subscribers
 
 execute :: State -> Command -> [Event]
 execute state command = case command of
@@ -44,49 +47,47 @@ execute state command = case command of
   StartTask t ref id               -> [TaskStarted t ref id]
   StopTask  t ref id               -> [TaskStopped t ref id]
   MarkAsDoneTask t ref _ id        -> [TaskMarkedAsDone t ref id]
-  DeleteTask t ref      id         -> [TaskDeleted t ref id]
-  SetContext t showDone context    -> [ContextSet t showDone context]
-  Error _ _                        -> []
+  DeleteTask t ref id              -> [TaskDeleted t ref id]
+  SetContext t ctx                 -> [ContextSet t ctx]
+  Error      _ _                   -> []
   NoOp                             -> []
 
-parseArgs :: UTCTime -> State -> [String] -> Command
-parseArgs t state args = case args of
-  ("create"  : args) -> createTask t state args
-  ("update"  : args) -> updateTask t state args
-  ("replace" : args) -> replaceTask t state args
-  ("start"   : args) -> startTask t state args
-  ("stop"    : args) -> stopTask t state args
-  ("toggle"  : args) -> toggleTask t state args
-  ("done"    : args) -> markAsDoneTask t state args
-  ("delete"  : args) -> deleteTask t state args
-  ("remove"  : args) -> removeTask t state args
-  ("context" : args) -> setContext t args
-  (command   : _   ) -> Error command "command not found"
-  []                 -> Error "" "command missing"
+getCmd :: UTCTime -> Parsec.ArgTree -> State -> Command
+getCmd t args state = case Parsec._cmd args of
+  "create"  -> createTask t args state
+  "update"  -> updateTask t args state
+  "replace" -> replaceTask t args state
+  "start"   -> startTask t args state
+  "stop"    -> stopTask t args state
+  "toggle"  -> toggleTask t args state
+  "done"    -> markAsDoneTask t args state
+  "delete"  -> deleteTask t args state
+  "remove"  -> removeTask t args state
+  "context" -> setContext t args
+  _         -> Error "" "invalid arguments"
 
-createTask t state args = case args of
-  []   -> Error "create" "missing desc"
-  args -> CreateTask t ref id pos desc tags due
-   where
-    ref  = floor $ 1000 * utcTimeToPOSIXSeconds t :: Int
-    id   = generateId $ filter (not . _done) $ _tasks state
-    pos  = -1
-    desc = unwords $ filter (not . startsByPlus) args
-    tags = filter startsByPlus args `union` _context state
-    due  = Nothing
+createTask :: UTCTime -> Parsec.ArgTree -> State -> Command
+createTask t args state = CreateTask t ref id pos desc tags due
+ where
+  ref  = floor $ 1000 * utcTimeToPOSIXSeconds t :: Int
+  id   = generateId $ filter (not . _done) $ _tasks state
+  pos  = -1
+  desc = Parsec._desc args
+  tags = Parsec._tags args `union` _ctx state
+  due  = Nothing
 
-updateTask t state args = case args of
-  []          -> Error "update" "missing id"
-  [_        ] -> Error "update" "missing args"
-  (id : args) -> case maybeTask of
+updateTask :: UTCTime -> Parsec.ArgTree -> State -> Command
+updateTask t args state = case Parsec._id args of
+  0  -> Error "update" "invalid arguments"
+  id -> case maybeTask of
     Nothing   -> Error "update" "task not found"
     Just task -> validate task
    where
-    tasks     = filterByDone (_showDone state) (_tasks state)
-    maybeTask = readMaybe id >>= flip findById tasks
-    newDesc   = unwords $ filter (not . startsByPlus) args
-    nextDesc  = if newDesc == "" then maybe "" _desc maybeTask else newDesc
-    newTags   = filter startsByPlus args
+    tasks     = filterByDone ("done" `elem` _ctx state) (_tasks state)
+    maybeTask = findById id tasks
+    newDesc   = Parsec._desc args
+    nextDesc  = if null newDesc then maybe "" _desc maybeTask else newDesc
+    newTags   = Parsec._tags args
     nextTags  = union newTags $ maybe [] _tags maybeTask
     validate task | _done task = Error "update" "task already done"
                   | otherwise  = update task
@@ -97,17 +98,17 @@ updateTask t state args = case args of
           due = Nothing
       in  UpdateTask t ref id pos nextDesc nextTags due
 
-replaceTask t state args = case args of
-  []          -> Error "replace" "missing id"
-  [_        ] -> Error "replace" "missing args"
-  (id : args) -> case maybeTask of
+replaceTask :: UTCTime -> Parsec.ArgTree -> State -> Command
+replaceTask t args state = case Parsec._id args of
+  0  -> Error "replace" "invalid arguments"
+  id -> case maybeTask of
     Nothing   -> Error "replace" "task not found"
     Just task -> validate task
    where
-    tasks     = filterByDone (_showDone state) (_tasks state)
-    maybeTask = readMaybe id >>= flip findById tasks
-    nextDesc  = unwords $ filter (not . startsByPlus) args
-    nextTags  = filter startsByPlus args
+    tasks     = filterByDone ("done" `elem` _ctx state) (_tasks state)
+    maybeTask = findById id tasks
+    nextDesc  = Parsec._desc args
+    nextTags  = Parsec._tags args
     validate task | _done task = Error "replace" "task already done"
                   | otherwise  = update task
     update task =
@@ -117,104 +118,112 @@ replaceTask t state args = case args of
           due = Nothing
       in  UpdateTask t ref id pos nextDesc nextTags due
 
-startTask t state args = case args of
-  []       -> Error "start" "missing id"
-  (id : _) -> case maybeTask of
+startTask :: UTCTime -> Parsec.ArgTree -> State -> Command
+startTask t args state = case Parsec._id args of
+  0  -> Error "replace" "invalid arguments"
+  id -> case maybeTask of
     Nothing   -> Error "start" "task not found"
     Just task -> validate task
    where
-    tasks     = filterByDone (_showDone state) (_tasks state)
-    maybeTask = readMaybe id >>= flip findById tasks
+    tasks     = filterByDone ("done" `elem` _ctx state) (_tasks state)
+    maybeTask = findById id tasks
     validate task | _done task   = Error "start" "task already done"
                   | _active task = Error "start" "task already started"
                   | otherwise    = StartTask t (_ref task) (_id task)
 
-stopTask t state args = case args of
-  []       -> Error "stop" "missing id"
-  (id : _) -> case maybeTask of
+stopTask :: UTCTime -> Parsec.ArgTree -> State -> Command
+stopTask t args state = case Parsec._id args of
+  0  -> Error "replace" "invalid arguments"
+  id -> case maybeTask of
     Nothing   -> Error "stop" "task not found"
     Just task -> validate task
    where
-    tasks     = filterByDone (_showDone state) (_tasks state)
-    maybeTask = readMaybe id >>= flip findById tasks
+    tasks     = filterByDone ("done" `elem` _ctx state) (_tasks state)
+    maybeTask = findById id tasks
     validate task | _done task           = Error "stop" "task already done"
                   | (not . _active) task = Error "stop" "task already stopped"
                   | otherwise            = StopTask t (_ref task) (_id task)
 
-toggleTask t state args = case args of
-  []       -> Error "toggle" "missing id"
-  (id : _) -> case maybeTask of
+toggleTask :: UTCTime -> Parsec.ArgTree -> State -> Command
+toggleTask t args state = case Parsec._id args of
+  0  -> Error "replace" "invalid arguments"
+  id -> case maybeTask of
     Nothing   -> Error "toggle" "task not found"
     Just task -> validate task
    where
-    tasks     = filterByDone (_showDone state) (_tasks state)
-    maybeTask = readMaybe id >>= flip findById tasks
+    tasks     = filterByDone ("done" `elem` _ctx state) (_tasks state)
+    maybeTask = findById id tasks
     validate task | _done task   = Error "toggle" "task already done"
                   | _active task = StopTask t (_ref task) (_id task)
                   | otherwise    = StartTask t (_ref task) (_id task)
 
-markAsDoneTask t state args = case args of
-  []       -> Error "done" "missing id"
-  (id : _) -> case maybeTask of
+markAsDoneTask :: UTCTime -> Parsec.ArgTree -> State -> Command
+markAsDoneTask t args state = case Parsec._id args of
+  0  -> Error "replace" "invalid arguments"
+  id -> case maybeTask of
     Nothing   -> Error "done" "task not found"
     Just task -> validate task
    where
-    tasks      = filterByDone (_showDone state) (_tasks state)
-    maybeTask  = readMaybe id >>= flip findById tasks
+    tasks      = filterByDone ("done" `elem` _ctx state) (_tasks state)
+    maybeTask  = findById id tasks
     nextNumber = generateId $ filter _done $ _tasks state
     validate task
       | _done task = Error "done" "task already done"
       | otherwise  = MarkAsDoneTask t (_ref task) (_id task) nextNumber
 
-deleteTask t state args = case args of
-  []       -> Error "delete" "missing id"
-  (id : _) -> case maybeTask of
+deleteTask :: UTCTime -> Parsec.ArgTree -> State -> Command
+deleteTask t args state = case Parsec._id args of
+  0  -> Error "replace" "invalid arguments"
+  id -> case maybeTask of
     Nothing   -> Error "delete" "task not found"
     Just task -> DeleteTask t (_ref task) (_id task)
    where
-    tasks     = filterByDone (_showDone state) (_tasks state)
-    maybeTask = readMaybe id >>= flip findById tasks
+    tasks     = filterByDone ("done" `elem` _ctx state) (_tasks state)
+    maybeTask = findById id tasks
 
-removeTask t state args = case args of
-  []       -> Error "remove" "missing id"
-  (id : _) -> case maybeTask of
+removeTask :: UTCTime -> Parsec.ArgTree -> State -> Command
+removeTask t args state = case Parsec._id args of
+  0  -> Error "replace" "invalid arguments"
+  id -> case maybeTask of
     Just task -> MarkAsDoneTask t (_ref task) (_id task) nextNumber
     Nothing   -> case maybeDoneTask of
       Just task -> DeleteTask t (_ref task) (_id task)
       Nothing   -> Error "remove" "task not found"
    where
-    tasks = if _showDone state then [] else filterByDone False (_tasks state)
+    showDone      = "done" `elem` _ctx state
+    tasks         = if showDone then [] else filterByDone False (_tasks state)
     doneTasks     = filterByDone True (_tasks state)
     nextNumber    = generateId doneTasks
-    maybeTask     = readMaybe id >>= flip findById tasks
-    maybeDoneTask = readMaybe id >>= flip findById doneTasks
+    maybeTask     = findById id tasks
+    maybeDoneTask = findById id doneTasks
 
-setContext t args = SetContext t showDone ctx
- where
-  showDone = "done" `elem` args
-  ctx      = filter startsByPlus args
+setContext :: UTCTime -> Parsec.ArgTree -> Command
+setContext t args = SetContext t (Parsec._tags args)
 
-type Subscriber = ResponseType -> Command -> IO ()
-notify :: ResponseType -> Command -> [Subscriber] -> IO ()
-notify rtype command = foldr (\sub _ -> sub rtype command) (return ())
+type Subscriber = Parsec.ArgTree -> Command -> IO ()
+notify :: Parsec.ArgTree -> Command -> [Subscriber] -> IO ()
+notify args command = foldr (\sub _ -> sub args command) (return ())
 
 logger :: Subscriber
-logger rtype event = case event of
-  CreateTask _ _ id _ _ _ _ -> printAction rtype id "created"
-  UpdateTask _ _ id _ _ _ _ -> printAction rtype id "updated"
-  StartTask _ _ id          -> printAction rtype id "started"
-  StopTask  _ _ id          -> printAction rtype id "stopped"
-  MarkAsDoneTask _ _ id _   -> printAction rtype id "done"
-  DeleteTask _ _        id  -> printAction rtype id "deleted"
-  SetContext _ showDone ctx -> printCtx rtype showDone ctx
-  Error cmd msg             -> printErr rtype $ cmd ++ ": " ++ msg
+logger args event = case event of
+  CreateTask _ _ id _ _ _ _ -> printAction id "created"
+  UpdateTask _ _ id _ _ _ _ -> printAction id "updated"
+  StartTask _ _ id          -> printAction id "started"
+  StopTask  _ _ id          -> printAction id "stopped"
+  MarkAsDoneTask _ _ id _   -> printAction id "done"
+  DeleteTask _ _ id         -> printAction id "deleted"
+  SetContext _ ctx          -> printCtx ctx
+  Error cmd msg ->
+    printErr rtype $ (if null cmd then "" else cmd ++ ": ") ++ msg
  where
-  printAction rtype id action =
+  rtype = if Parsec._json (Parsec._opts args) then JSON else Text
+
+  printAction id action =
     let msg = "task [" ++ show id ++ "] " ++ action in printMsg rtype msg
 
-  printCtx rtype showDone ctx =
+  printCtx ctx =
     let
-      ctxStr = unwords ([ "done" | showDone ] ++ ctx)
+      ctxStr = unwords ctx
       msg    = "context "
         ++ if null ctxStr then "cleared" else "[" ++ ctxStr ++ "] set"
     in

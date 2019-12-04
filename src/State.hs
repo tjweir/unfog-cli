@@ -9,13 +9,12 @@ import           Task
 import           Utils
 
 data State = State { _tasks :: [Task]
-                   , _showDone :: Bool
-                   , _context :: [Tag]
+                   , _ctx :: [Tag]
                    } deriving (Show, Read)
 
-applyAll :: [Event] -> State
-applyAll = foldl apply emptyState
-  where emptyState = State { _tasks = [], _showDone = False, _context = [] }
+applyEvents :: [Event] -> State
+applyEvents = foldl apply emptyState
+  where emptyState = State { _tasks = [], _ctx = [] }
 
 apply :: State -> Event -> State
 apply state event = case event of
@@ -44,15 +43,13 @@ apply state event = case event of
       in  task { _id, _active = False, _done = True, _stops = nextStops }
 
   TaskDeleted _ ref _ -> state { _tasks = nextTasks }
-   where
-    update _ = emptyTask
-    nextTasks = filter (emptyTask /=) $ getNextTasks ref update
+    where nextTasks = filter ((/=) ref . _ref) (_tasks state)
 
-  ContextSet _ _showDone _context -> state { _showDone, _context }
+  ContextSet _ _ctx -> state { _ctx }
 
  where
   getNextTasks ref update =
-    case findByRef ref $ filterByDone (_showDone state) (_tasks state) of
+    case findByRef ref $ filterByTags (_ctx state) (_tasks state) of
       Nothing -> _tasks state
       Just task ->
         let nextTask = update task
