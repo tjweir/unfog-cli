@@ -1,28 +1,29 @@
 module Query where
 
-import qualified Data.ByteString.Lazy.Char8    as BL
 import           Control.Exception
-import           Data.Maybe
-import           Text.Read
-import           Data.Time.Clock
+import           Data.Aeson
+import qualified Data.ByteString.Lazy.Char8 as BL
 import           Data.Duration
 import           Data.Fixed
 import           Data.List
+import           Data.Maybe
+import           Data.Time.Clock
 import           Text.PrettyPrint.Boxes
-import           Data.Aeson
+import           Text.Read
 
-import qualified Store
-import           State
-import           Task
-import           Utils
 import           Event
 import           Response
+import           State
+import qualified Store
+import           Task
+import           Utils
 
 data Query
   = ShowTasks [String]
   | ShowTask Id [String]
   | ShowWtime [String]
   | Error String String
+  | NoCommand
   deriving (Show)
 
 handle :: ResponseType -> [String] -> IO ()
@@ -36,13 +37,14 @@ parseArgs :: [String] -> Query
 parseArgs args = case args of
   ("list"          : args) -> ShowTasks args
   ("worktime"      : args) -> ShowWtime args
+  ("help"          : args) -> NoCommand
   ("show" : number : args) -> case readMaybe number of
     Nothing     -> Query.Error "show" "task not found"
     Just number -> ShowTask number args
 
 execute :: ResponseType -> State -> [Event] -> Query -> IO ()
 execute rtype state events query = case query of
-  ShowTasks args -> do
+  ShowTasks _args -> do
     now <- getCurrentTime
     let fByTags = filterByTags $ _context state
     let fByDone = filterByDone $ _showDone state
@@ -73,5 +75,18 @@ execute rtype state events query = case query of
     let wtime = getWtimePerDay now tasks
     let ctx = if null args then "global" else "for [" ++ unwords tags ++ "]"
     printWtime rtype ("unfog: wtime " ++ ctx) wtime
+
+  NoCommand -> do
+    now <- getCurrentTime
+    let fByTags = filterByTags $ _context state
+    let fByDone = filterByDone $ _showDone state
+    let tasks   = mapWithWtime now . fByTags . fByDone $ _tasks state
+    case rtype of
+      JSON -> printTasks JSON tasks
+      Text -> do
+        let ctx    = [ "done" | _showDone state ] ++ _context state
+        let ctxStr = if null ctx then "" else " [" ++ unwords ctx ++ "]"
+        putStrLn $ "unfog: list" ++ ctxStr
+        printTasks Text tasks
 
   Query.Error command message -> printErr rtype $ command ++ ": " ++ message

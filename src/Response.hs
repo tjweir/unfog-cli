@@ -28,6 +28,9 @@ printTask rtype task = case rtype of
   Text -> prettyPrintTasks [task]
 
 printTasks :: ResponseType -> [Task] -> IO ()
+printTasks rtype [] = case rtype of
+  JSON -> BL.putStr $ encode $ ResponseTasks tasks
+  Text -> 
 printTasks rtype tasks = case rtype of
   JSON -> BL.putStr $ encode $ ResponseTasks tasks
   Text -> prettyPrintTasks tasks
